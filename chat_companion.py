@@ -116,11 +116,32 @@ if stage=="size" and re.search(r"(benefit|advantage|difference).*small.*large",l
     st.stop()          # <–– replaces the invalid 'continue'
 
 # ----- Pipeline -----
-if stage=="rapport":
-    prof["interests"]=re.findall(r"[a-zA-Z]{3,}",lower)
-    st.session_state.stage="capital"
-    ask="To match brands to your budget, roughly **how much liquid capital** could you invest upfront?"
-    st.session_state.history.append(("assistant",ask)); st.chat_message("assistant").markdown(ask); st.stop()
+# ----- RAPPORT / INTERESTS -------------------------------
+if stage == "rapport":
+    # pull words with 3+ letters as a first pass
+    kws = re.findall(r"[a-zA-Z]{3,}", lower)
+    # discard very generic words
+    stop = {"just", "really", "little", "starting", "journey", "into", "franchising"}
+    kws = [w for w in kws if w not in stop]
+
+    if kws:
+        prof["interests"] = kws
+        st.session_state.stage = "capital"
+        ask = ("Thanks! To match brands to your budget, roughly **how much liquid capital** "
+               "could you invest upfront?")
+        st.session_state.history.append(("assistant", ask))
+        st.chat_message("assistant").markdown(ask)
+    else:
+        # user didn't give concrete interests – re‑prompt with examples
+        prompt = (
+            "No problem—I’d love to learn what sparks your excitement. "
+            "For instance, do you enjoy **fitness**, **pets**, **home improvement**, "
+            "**coffee**, **education**, or something else entirely? "
+            "Any keywords will help me narrow the universe of franchises."
+        )
+        st.session_state.history.append(("assistant", prompt))
+        st.chat_message("assistant").markdown(prompt)
+    st.stop()
 
 if stage=="capital":
     if m:=re.search(r"\$?([\d,]+)",lower):

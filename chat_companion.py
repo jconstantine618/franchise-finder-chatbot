@@ -19,7 +19,7 @@ from pathlib import Path
 from difflib import get_close_matches
 
 # ------------- CONFIG --------------
-DATA_FILE = "ifpg dataset.xlsx"          # exact file name in repo
+DATA_FILE = "data/ifpg_dataset.xlsx"          # exact file name in repo
 MODEL     = "gpt-3.5-turbo"              # or "gpt-4o"
 TOP_K     = 6                            # rows to pass as context
 openai.api_key = (

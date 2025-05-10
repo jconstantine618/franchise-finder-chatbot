@@ -1,27 +1,26 @@
-# chat_companion.py  –  v3 “Warm Pipeline”  (May 2025)
-# ----------------------------------------------------
+# chat_companion.py   – v4 “Warm Pipeline + Clarifier”  (May 2025)
+# ---------------------------------------------------------------
 import streamlit as st
 import pandas as pd
 import openai, os, re
 from pathlib import Path
 
-# ---------- STREAMLIT MUST COME FIRST ----------
+# ---------- Page config must come first ----------
 st.set_page_config(page_title="Franchise Chat Companion")
-# ----------------------------------------------
+# -------------------------------------------------
 
-# ---------- OPENAI ----------
+# ---------- OpenAI setup ----------
 openai.api_key = (
     os.getenv("OPENAI_API_KEY") or
     st.secrets.get("OPENAI_API_KEY", "")
 )
 if not openai.api_key:
-    st.error("Please add OPENAI_API_KEY in Streamlit secrets.")
+    st.error("OPENAI_API_KEY missing in Streamlit secrets.")
     st.stop()
 
-MODEL  = "gpt-3.5-turbo"
-TOP_K  = 6
+MODEL, TOP_K = "gpt-3.5-turbo", 6
 
-# ---------- DATA ----------
+# ---------- Data ----------
 DATA_FILE = "data/ifpg_dataset.xlsx"
 
 @st.cache_data
@@ -35,11 +34,11 @@ def load_df():
 
 df = load_df()
 
-# ---------- UTILITIES ----------
-def money(v):
-    if v is None or pd.isna(v): return "N/A"
-    x = re.sub(r"[^\d.]", "", str(v))
-    return "N/A" if not x or float(x) == 0 else f"${float(x):,.0f}"
+# ---------- Helpers ----------
+def money(val):
+    if val is None or pd.isna(val): return "N/A"
+    num = re.sub(r"[^\d.]", "", str(val))
+    return "N/A" if not num or float(num) == 0 else f"${float(num):,.0f}"
 
 def size_bucket(units):
     try: return "large" if int(units) >= 100 else "small"
@@ -61,159 +60,184 @@ def gpt(system, user, temp=0.6):
         messages=[{"role":"system","content":system},
                   {"role":"user","content":user}],
         temperature=temp,
-        max_tokens=600,
+        max_tokens=650,
     ).choices[0].message.content.strip()
 
 def capture_size(txt):
     txt = txt.lower()
-    if re.search(r"\bsmall\b", txt):   return "small"
+    if re.search(r"\bsmall\b", txt):  return "small"
     if re.search(r"\b(large|big)\b", txt): return "large"
     if re.search(r"\b(either|any|no preference)\b", txt): return "either"
     return None
 
-# ---------- SESSION STATE ----------
+# ---------- Session state ----------
 if "history" not in st.session_state:
     st.session_state.history = []
     st.session_state.profile = {
         "name": None,
         "interests": [],
         "capital": None,
-        "hours": None,
-        "size": None,
+        "hours": None,   # owner | semi | passive
+        "size":  None,   # small | large | either
     }
-    st.session_state.stage = "rapport"   # pipeline pointer
+    st.session_state.stage = "rapport"
 
-# ---------- DISPLAY HISTORY ----------
+# ---------- Render chat ----------
 for role, msg in st.session_state.history:
     st.chat_message(role).markdown(msg)
 
-# ---------- FIRST GREETING ----------
+# ---------- First greeting ----------
 if not st.session_state.history:
     greet = (
-        "Hey there! 👋  How are you doing today? I’m excited you’re exploring franchise ownership. "
-        "**What are your primary interests?** (For example: fitness, coffee, home‑services, golf …)"
+        "Hey there! 👋 How are you doing today? I’m excited you’re exploring franchise ownership. "
+        "**What are your primary interests?** _(e.g., fitness, coffee, home services, golf…)_"
     )
     st.session_state.history.append(("assistant", greet))
     st.chat_message("assistant").markdown(greet)
 
-# ---------- USER INPUT ----------
+# ---------- User input ----------
 user_msg = st.chat_input("Type your message…")
 
 if user_msg:
     st.session_state.history.append(("user", user_msg))
     st.chat_message("user").markdown(user_msg)
 
-    prof   = st.session_state.profile
-    stage  = st.session_state.stage
-    lower  = user_msg.lower()
+    prof, stage = st.session_state.profile, st.session_state.stage
+    lower = user_msg.lower()
 
-    # 1) LIGHT NAME GRAB (if user says “I’m John” etc.)
+    # --- light name capture ---
     if not prof["name"]:
         m = re.search(r"\b(?:i[' ]?m|my name is)\s+([a-zA-Z]+)", user_msg, re.I)
         if m: prof["name"] = m.group(1).title()
 
-    # 2) EMOTION ACKNOWLEDGEMENT
+    # --- empathy if fear words ---
     if any(w in lower for w in ["scared", "nervous", "worried", "fear"]):
-        empathy = (
-            "I completely understand—that feeling is perfectly normal when considering a big step like a franchise. "
-            "My role is to guide you at your pace and make the process clear and comfortable. "
-            "Let’s tackle each piece together. 😊"
+        reassure = (
+            "Totally understandable—taking the first step can feel daunting. "
+            "I’m here to make the process clear and comfortable. Let’s go at your pace. 😊"
         )
-        st.session_state.history.append(("assistant", empathy))
-        st.chat_message("assistant").markdown(empathy)
+        st.session_state.history.append(("assistant", reassure))
+        st.chat_message("assistant").markdown(reassure)
 
-    # 3) PIPELINE LOGIC ---------------------------------------------------
+    # ---------- Clarifier: benefits small vs large -----------
+    if stage == "size" and re.search(r"(benefit|advantage|difference).*small.*large", lower):
+        explain = (
+            "**Small systems**\n"
+            "• Lower entry cost on average\n"
+            "• Flexibility to influence local strategy & culture\n"
+            "• Faster decision cycles but lighter national marketing/support\n\n"
+            "**Large systems**\n"
+            "• Robust training, peer network, national ad fund\n"
+            "• Strong brand recognition and lender familiarity\n"
+            "• Higher startup costs, stricter standards"
+        )
+        follow = "Given that overview, which feels like a better fit for you—**small**, **large**, or **either**?"
+        st.session_state.history.extend([("assistant", explain), ("assistant", follow)])
+        st.chat_message("assistant").markdown(explain)
+        st.chat_message("assistant").markdown(follow)
+        # stay in 'size' stage until captured
+        continue
+
+    # ---------- Pipeline extraction ----------
     if stage == "rapport":
-        # capture interests keywords
         prof["interests"] = re.findall(r"[a-zA-Z]{3,}", lower)
         st.session_state.stage = "capital"
-        q = "To match brands to your budget, may I ask **about how much liquid capital** you could invest upfront?"
-        st.session_state.history.append(("assistant", q))
-        st.chat_message("assistant").markdown(q)
+        ask = "To match brands to your budget, roughly **how much liquid capital** could you invest upfront?"
+        st.session_state.history.append(("assistant", ask))
+        st.chat_message("assistant").markdown(ask)
 
     elif stage == "capital":
         if m := re.search(r"\$?([\d,]+)", lower):
             prof["capital"] = int(m.group(1).replace(",", ""))
             st.session_state.stage = "hours"
-            q = ("Got it—thank you! ✨  Next, how involved would you like to be once it’s running?\n"
-                 "*• Full‑time owner‑operator*\n"
-                 "*• Semi‑absentee (≈10‑20 hrs/week)*\n"
-                 "*• Mostly passive (< 5 hrs/week)*")
-            st.session_state.history.append(("assistant", q))
-            st.chat_message("assistant").markdown(q)
+            ask = (
+                "Great. How involved would you like to be once it’s running?\n"
+                "*• Full‑time owner‑operator*\n*• Semi‑absentee (≈10‑20 hrs/week)*\n"
+                "*• Mostly passive (< 5 hrs/week)*"
+            )
+            st.session_state.history.append(("assistant", ask))
+            st.chat_message("assistant").markdown(ask)
         else:
-            retry = "No worries—when you have an approximate amount, let me know (even a rough range is fine!)."
+            retry = "No worries—an approximate number or range is fine whenever you’re ready."
             st.session_state.history.append(("assistant", retry))
             st.chat_message("assistant").markdown(retry)
 
     elif stage == "hours":
-        if "semi" in lower or "10" in lower or "20" in lower:
+        if re.search(r"(semi|10-?20|part[- ]?time)", lower):
             prof["hours"] = "semi"
-        elif "passive" in lower or "<5" in lower:
+        elif re.search(r"(passive|<\s*5|five\s*hours)", lower):
             prof["hours"] = "passive"
         else:
             prof["hours"] = "owner"
         st.session_state.stage = "size"
-        q = (
-            "Fantastic. One last preference question: **Do you lean toward a large, established franchise system "
-            "with extensive support, or a smaller, more entrepreneurial system that’s often lower cost and flexible?** "
-            "_Feel free to say **small, large, or either**._"
+        ask = (
+            "Do you lean toward a **large, established franchise system** with extensive support, "
+            "or a **smaller, more entrepreneurial system** that’s often lower cost and flexible? "
+            "Feel free to answer: **small**, **large**, or **either**."
         )
-        st.session_state.history.append(("assistant", q))
-        st.chat_message("assistant").markdown(q)
+        st.session_state.history.append(("assistant", ask))
+        st.chat_message("assistant").markdown(ask)
 
     elif stage == "size":
-        grabbed = capture_size(lower)
-        if grabbed:
-            prof["size"] = grabbed
+        size_choice = capture_size(lower)
+        if size_choice:
+            prof["size"] = size_choice
             st.session_state.stage = "recommend"
         else:
-            retry = "Just let me know if you prefer **small**, **large**, or **either**—no rush."
-            st.session_state.history.append(("assistant", retry))
-            st.chat_message("assistant").markdown(retry)
+            reprompt = "Just let me know if you prefer **small**, **large**, or **either**."
+            st.session_state.history.append(("assistant", reprompt))
+            st.chat_message("assistant").markdown(reprompt)
 
-    # 4) RECOMMENDATION & CLOSE ------------------------------------------
+    # ---------- Recommendation -----------
     if st.session_state.stage == "recommend":
-        # filter dataset
         rec = df.copy()
         # interests
         if prof["interests"]:
-            pattern = "|".join(prof["interests"])
+            pat = "|".join(prof["interests"])
             rec = rec[
-                rec["industry"].str.contains(pattern, case=False, na=False) |
-                rec["business summary"].str.contains(pattern, case=False, na=False)
+                rec["industry"].str.contains(pat, case=False, na=False) |
+                rec["business summary"].str.contains(pat, case=False, na=False)
             ]
         # capital
-        rec["low"] = (
-            rec["cash required"].str.extract(r"(\d[\d,]*)")
-                               .replace({",": ""}, regex=True).astype(float)
-        )
-        rec = rec[rec["low"] <= (prof["capital"] or 1e9)]
+        if prof["capital"]:
+            rec["low"] = (
+                rec["cash required"].str.extract(r"(\d[\d,]*)")
+                                   .replace({",": ""}, regex=True)
+                                   .astype(float)
+            )
+            rec = rec[rec["low"] <= prof["capital"]]
         # hours
-        if prof["hours"] == "semi":
+        h = prof["hours"]
+        if h == "semi":
             rec = rec[rec["semi-absentee ownership"] == "Yes"]
-        elif prof["hours"] == "passive":
+        elif h == "passive":
             rec = rec[rec["passive franchise"] == "Yes"]
         # size
         if prof["size"] != "either":
             rec = rec[rec["number of units open"].apply(size_bucket) == prof["size"]]
 
         top = rec.head(TOP_K)
+
         if top.empty:
-            reply = (
-                "It looks like none match every filter. Would you like to broaden budget or hours, "
-                "or should we explore a different industry niche?"
+            respond = (
+                "It seems no brands tick every box. Would you like to broaden your budget, "
+                "adjust hours, or explore a different industry niche?"
             )
         else:
             ctx = "\n\n".join(format_row(r) for _, r in top.iterrows())
             system = (
-                "You are a warm, consultative franchise advisor who follows Dale Carnegie courtesy, "
-                "Sandler clarity, and Challenger insight. Respond in 2‑3 friendly sentences per brand, "
-                "explaining why each fits the user's stated interests, capital, hours, and size preference. "
-                "Finish by offering an easy next step (e.g., schedule a detailed call)."
+                "You are a warm, consultative franchise advisor. "
+                "For each brand in CONTEXT, write 2 friendly sentences on why it fits the user's profile. "
+                "Close with an invitation to schedule a deeper call or ask more questions."
             )
-            reply = gpt(system, f"User profile: {prof}\n\nBRANDS:\n{ctx}")
+            respond = gpt(system, f"User profile: {prof}\n\nCONTEXT:\n{ctx}")
 
-        st.session_state.history.append(("assistant", reply))
-        st.chat_message("assistant").markdown(reply)
-        st.session_state.stage = "done"   # stop further questions
+        st.session_state.history.append(("assistant", respond))
+        st.chat_message("assistant").markdown(respond)
+        st.session_state.stage = "done"
+        # capture size choice globally—even after recommend, user can change
+    else:
+        # Fallback size capture even if not in size stage
+        if prof["size"] is None:
+            if size_val := capture_size(lower):
+                prof["size"] = size_val
